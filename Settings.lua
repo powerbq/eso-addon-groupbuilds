@@ -1,6 +1,9 @@
-GroupBuildsSettings = {}
+local GroupBuilds = GroupBuilds
+local LibAddonMenu2 = LibAddonMenu2
 
-function GroupBuildsSettings:Setup()
+GroupBuilds.Settings = {}
+
+function GroupBuilds.Settings:Setup()
     local panelName = 'GroupBuildsOptions'
 
     local panelData = {
@@ -28,28 +31,12 @@ function GroupBuildsSettings:Setup()
                 GroupBuilds.sv.sharing.alwaysShare = value
                 GroupBuilds:RefreshList()
                 if GroupBuilds:IsSharing() then
-                    GroupBuilds:QueueSendMyBuild(true)
+                    GroupBuilds:SyncGroup()
                 else
                     GroupBuilds:ClearMyBuild()
                 end
             end,
             default = false,
-        },
-        {
-            type = 'slider',
-            name = 'Auto-refresh interval (s)',
-            tooltip = '0 = off. Periodically re-check your build out of combat and resend it only if it changed. Catches changes not detected automatically (mundus, food, champion points, etc.).',
-            min = 0,
-            max = 120,
-            step = 5,
-            getFunc = function()
-                return GroupBuilds.sv.sharing.refreshInterval
-            end,
-            setFunc = function(value)
-                GroupBuilds.sv.sharing.refreshInterval = value
-                GroupBuilds:StartRefreshTimer()
-            end,
-            default = 10,
         },
         {
             type = 'header',

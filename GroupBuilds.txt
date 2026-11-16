@@ -6,11 +6,11 @@
 ## Title: Group Builds
 ## Description: Live sharing of builds between group members, with the option to save them to view later.
 ## Author: @f1rex
-## Version: 1
-## AddOnVersion: 1
+## Version: 2
+## AddOnVersion: 2
 ## APIVersion: 101051
 ## SavedVariables: GroupBuildsSavedVariables
-## DependsOn: SuperStar>=80001 LibGroupBroadcast>=91 LibAddonMenu-2.0>=43
+## DependsOn: SuperStar>=80001 LibGroupBroadcast>=95 LibAddonMenu-2.0>=43
 
 Window.xml
 Browser.xml

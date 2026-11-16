@@ -1,4 +1,14 @@
-GroupBuildsBrowserClass = ZO_SortFilterList:Subclass()
+local GroupBuilds = GroupBuilds
+local ZO_SortFilterList = ZO_SortFilterList
+local GetControl = GetControl
+local GetClassIcon = GetClassIcon
+local GetClassInfo = GetClassInfo
+local GetNumClasses = GetNumClasses
+local GetDateStringFromTimestamp = GetDateStringFromTimestamp
+local GetTimeStamp = GetTimeStamp
+local WINDOW_MANAGER = WINDOW_MANAGER
+
+GroupBuilds.BrowserClass = ZO_SortFilterList:Subclass()
 
 local ROLE_FILTER_ORDER = {
     LFG_ROLE_TANK,
@@ -14,7 +24,7 @@ local function GetWhen(timestamp)
     return GetDateStringFromTimestamp(timestamp)
 end
 
-function GroupBuildsBrowserClass:InitializeInterface()
+function GroupBuilds.BrowserClass:InitializeInterface()
     self.scrollData = ZO_ScrollList_GetDataList(self.list)
 
     ZO_ScrollList_AddDataType(self.list, 1, 'GroupBuildsBrowserRow', 40, function(control, data)
@@ -40,7 +50,7 @@ function GroupBuildsBrowserClass:InitializeInterface()
     self.sortHeaderGroup:SelectHeaderByKey('timestamp')
 end
 
-function GroupBuildsBrowserClass:CreateFilterButtons()
+function GroupBuilds.BrowserClass:CreateFilterButtons()
     local parent = GroupBuildsBrowserFilters
     local x = 0
 
@@ -70,7 +80,7 @@ function GroupBuildsBrowserClass:CreateFilterButtons()
     end
 end
 
-function GroupBuildsBrowserClass:MakeFilterButton(parent, x, icon, onClicked)
+function GroupBuilds.BrowserClass:MakeFilterButton(parent, x, icon, onClicked)
     local button = WINDOW_MANAGER:CreateControl(nil, parent, CT_BUTTON)
     button:SetDimensions(32, 32)
     button:SetAnchor(LEFT, parent, LEFT, x, 0)
@@ -79,7 +89,7 @@ function GroupBuildsBrowserClass:MakeFilterButton(parent, x, icon, onClicked)
     return button
 end
 
-function GroupBuildsBrowserClass:BuildMasterList()
+function GroupBuilds.BrowserClass:BuildMasterList()
     self.masterList = {}
 
     for id, entry in pairs(GroupBuilds.sv.saved) do
@@ -105,7 +115,7 @@ function GroupBuildsBrowserClass:BuildMasterList()
     end
 end
 
-function GroupBuildsBrowserClass:FilterScrollList()
+function GroupBuilds.BrowserClass:FilterScrollList()
     ZO_ClearNumericallyIndexedTable(self.scrollData)
 
     local search = GroupBuildsBrowser:GetNamedChild('Filters'):GetNamedChild('Search'):GetNamedChild('Box'):GetText():lower()
@@ -123,11 +133,11 @@ function GroupBuildsBrowserClass:FilterScrollList()
     end
 end
 
-function GroupBuildsBrowserClass:SortScrollList()
+function GroupBuilds.BrowserClass:SortScrollList()
     table.sort(self.scrollData, self.sortFunction)
 end
 
-function GroupBuildsBrowserClass:SetupRow(control, data)
+function GroupBuilds.BrowserClass:SetupRow(control, data)
     control.data = data
 
     GetControl(control, 'Role'):SetTexture(GroupBuilds:RoleIcon(data.role))

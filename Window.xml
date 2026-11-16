@@ -53,6 +53,9 @@
                     <Anchor point="TOPLEFT" relativeTo="$(parent)" relativePoint="TOPLEFT" offsetX="8" offsetY="68" />
                     <Anchor point="TOPRIGHT" relativeTo="$(parent)" relativePoint="TOPRIGHT" offsetX="-8" offsetY="68" />
                 </Control>
+                <Texture name="$(parent)Loading" textureFile="EsoUI/Art/Miscellaneous/wait_icon.dds" layer="OVERLAY" hidden="true">
+                    <Dimensions x="20" y="20" />
+                </Texture>
             </Controls>
         </TopLevelControl>
 

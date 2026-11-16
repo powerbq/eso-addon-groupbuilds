@@ -2,12 +2,18 @@ GroupBuilds = {}
 
 GroupBuilds.name = 'GroupBuilds'
 GroupBuilds.builds = {}
+GroupBuilds.available = {}
 GroupBuilds.rowControls = {}
 
-local PROTOCOL_ID = 200
+local PROTOCOL_ID = 310
 local PROTOCOL_NAME = 'GroupBuildsData'
-local RESYNC_EVENT_ID = 20
-local RESYNC_EVENT_NAME = 'GroupBuildsResync'
+
+local MSG_REQUEST = 1
+local MSG_RESPONSE = 2
+local MSG_ANNOUNCE = 3
+local MSG_CLEAR = 4
+local MSG_INVALIDATE = 5
+local MSG_HELLO = 6
 
 local ROW_HEIGHT = 26
 local HEADER_TITLE = 36
@@ -18,7 +24,6 @@ local MAX_WIDTH = 420
 local NAME_LEFT_ROLE = 30
 local NAME_LEFT_CLASS = 54
 local WIDTH_PADDING = 28
-local SEND_DEBOUNCE = 400
 
 local ROLE_ORDER = {
     [LFG_ROLE_TANK] = 1,
@@ -42,7 +47,6 @@ local EM = GetEventManager()
 local LGB = LibGroupBroadcast
 
 local protocol
-local fireResync
 
 function GroupBuilds:GetRoleOrder(role)
     return ROLE_ORDER[role] or 4
@@ -101,12 +105,8 @@ function GroupBuilds:GetMyPayload()
     return link:match(':sss:(.-)|h')
 end
 
-function GroupBuilds:SendMyBuild(force)
-    if not self:IsSharing() then
-        return
-    end
-
-    if not IsUnitGrouped('player') then
+function GroupBuilds:SendMyBuild()
+    if not self:IsSharing() or not IsUnitGrouped('player') then
         return
     end
 
@@ -115,12 +115,38 @@ function GroupBuilds:SendMyBuild(force)
         return
     end
 
-    if not force and payload == self.lastSentPayload then
+    self.lastPayload = payload
+    protocol:Send({ kind = MSG_RESPONSE, target = '', build = payload })
+end
+
+function GroupBuilds:QueueSendMyBuild()
+    self:Schedule('GroupBuilds_Respond', 300, function()
+        self:SendMyBuild()
+    end)
+end
+
+function GroupBuilds:QueueInvalidate()
+    self:Schedule('GroupBuilds_Invalidate', 400, function()
+        if not self:IsSharing() or not IsUnitGrouped('player') then
+            return
+        end
+
+        local payload = self:GetMyPayload()
+        if not payload or payload == self.lastPayload then
+            return
+        end
+
+        self.lastPayload = payload
+        protocol:Send({ kind = MSG_INVALIDATE, target = '', build = '' })
+    end)
+end
+
+function GroupBuilds:RequestBuild(account)
+    if not account or not IsUnitGrouped('player') then
         return
     end
 
-    self.lastSentPayload = payload
-    protocol:Send({ build = payload })
+    protocol:Send({ kind = MSG_REQUEST, target = account, build = '' })
 end
 
 function GroupBuilds:ClearMyBuild()
@@ -128,70 +154,155 @@ function GroupBuilds:ClearMyBuild()
         return
     end
 
-    self.lastSentPayload = nil
-    protocol:Send({ build = '' })
+    protocol:Send({ kind = MSG_CLEAR, target = '', build = '' })
 end
 
-function GroupBuilds:QueueSendMyBuild(force)
-    self:Schedule('GroupBuilds_Send', SEND_DEBOUNCE, function()
-        self:SendMyBuild(force)
-    end)
+function GroupBuilds:Announce()
+    if not self:IsSharing() or not IsUnitGrouped('player') then
+        return
+    end
+
+    protocol:Send({ kind = MSG_ANNOUNCE, target = '', build = '' })
 end
 
-function GroupBuilds:QueueResyncResponse()
+function GroupBuilds:QueueAnnounce()
     local delay = 500 + zo_floor(zo_random() * 3000)
-    self:Schedule('GroupBuilds_ResyncResponse', delay, function()
-        self:SendMyBuild(true)
+    self:Schedule('GroupBuilds_Announce', delay, function()
+        self:Announce()
     end)
 end
 
-function GroupBuilds:RequestResync()
+function GroupBuilds:Hello()
     if not IsUnitGrouped('player') then
         return
     end
 
-    if fireResync then
-        fireResync()
-    end
+    protocol:Send({ kind = MSG_HELLO, target = '', build = '' })
 end
 
-function GroupBuilds:StartRefreshTimer()
-    EM:UnregisterForUpdate('GroupBuilds_Refresh')
-
-    local interval = self.sv.sharing.refreshInterval
-    if not interval or interval <= 0 then
-        return
-    end
-
-    EM:RegisterForUpdate('GroupBuilds_Refresh', interval * 1000, function()
-        if IsUnitInCombat('player') then
-            return
-        end
-        self:SendMyBuild(false)
-    end)
-end
-
-function GroupBuilds:OnBuildReceived(unitTag, data)
-    local displayName = GetUnitDisplayName(unitTag)
-    if not displayName or displayName == '' then
-        return
-    end
-
-    if data.build == '' then
-        self.builds[displayName] = nil
+function GroupBuilds:SyncGroup()
+    if self:IsSharing() then
+        self:Announce()
     else
-        self.builds[displayName] = data.build
+        self:ClearMyBuild()
     end
-    self:RefreshList()
+    self:Hello()
+end
+
+function GroupBuilds:OnData(unitTag, data)
+    local sender = GetUnitDisplayName(unitTag)
+    if not sender or sender == '' then
+        return
+    end
+
+    if data.kind == MSG_REQUEST then
+        if data.target == GetUnitDisplayName('player') then
+            self:QueueSendMyBuild()
+        end
+    elseif data.kind == MSG_RESPONSE then
+        self.builds[sender] = data.build
+        self.available[sender] = true
+        local p = self.pending
+        if p and p.account == sender then
+            self.pending = nil
+            self:ActOnBuild(p, data.build)
+        end
+        self:RefreshList()
+    elseif data.kind == MSG_ANNOUNCE then
+        self.available[sender] = true
+        self:RefreshList()
+    elseif data.kind == MSG_HELLO then
+        if self:IsSharing() then
+            self:QueueAnnounce()
+        end
+    elseif data.kind == MSG_INVALIDATE then
+        self.builds[sender] = nil
+        self:RefreshList()
+    elseif data.kind == MSG_CLEAR then
+        self.builds[sender] = nil
+        self.available[sender] = nil
+        self:RefreshList()
+    end
+end
+
+function GroupBuilds:HideLoading()
+    if self.loadingAnim:IsPlaying() then
+        self.loadingAnim:Stop()
+    end
+    GroupBuildsWindowLoading:SetHidden(true)
+end
+
+function GroupBuilds:ActOnBuild(info, payload)
+    if self.loadingAccount then
+        self.loadingAccount = nil
+        self:RefreshList()
+    end
+    self.displayed = { payload = payload, role = info.role, class = info.class, name = info.name }
+    if info.kind == 'save' then
+        self:OpenSaveDialog(payload, info.role, info.class, info.name)
+    else
+        self:OpenBuild(payload)
+    end
+end
+
+function GroupBuilds:RequestAndAct(rowControl, kind)
+    local info = {
+        account = rowControl.account,
+        kind = kind,
+        role = rowControl.saveRole,
+        class = rowControl.saveClass,
+        name = rowControl.ownerName,
+    }
+
+    local payload = rowControl.payload
+    if payload then
+        self.pending = nil
+        self:ActOnBuild(info, payload)
+    elseif info.account then
+        self.pending = info
+        self.loadingAccount = info.account
+        self:RefreshList()
+        self:Schedule('GroupBuilds_ReqTimeout', 10000, function()
+            if self.pending == info then
+                self.pending = nil
+                self.loadingAccount = nil
+                self.available[info.account] = nil
+                self:RefreshList()
+            end
+        end)
+        self:RequestBuild(info.account)
+    end
 end
 
 function GroupBuilds:MakeRow(tag, payload)
     return {
         name = self:FormatName(tag),
+        account = GetUnitDisplayName(tag),
         role = GetGroupMemberSelectedRole(tag),
         class = GetUnitClassId(tag),
         payload = payload,
     }
+end
+
+function GroupBuilds:PruneDeparted()
+    local present = {}
+    if IsUnitGrouped('player') then
+        for i = 1, GetGroupSize() do
+            present[GetUnitDisplayName(GetGroupUnitTagByIndex(i))] = true
+        end
+    end
+
+    for account in pairs(self.available) do
+        if not present[account] then
+            self.available[account] = nil
+        end
+    end
+
+    for account in pairs(self.builds) do
+        if not present[account] then
+            self.builds[account] = nil
+        end
+    end
 end
 
 function GroupBuilds:RefreshList()
@@ -200,20 +311,18 @@ function GroupBuilds:RefreshList()
     local rows = {}
 
     if IsUnitGrouped('player') then
-        if self:IsSharing() then
-            local payload = self:GetMyPayload()
-            if payload then
-                table.insert(rows, self:MakeRow('player', payload))
-            end
-        end
-
         for i = 1, GetGroupSize() do
             local tag = GetGroupUnitTagByIndex(i)
-            if not AreUnitsEqual('player', tag) then
-                local payload = self.builds[GetUnitDisplayName(tag)]
-                if payload then
-                    table.insert(rows, self:MakeRow(tag, payload))
+            local account = GetUnitDisplayName(tag)
+            if AreUnitsEqual('player', tag) then
+                if self:IsSharing() then
+                    local payload = self:GetMyPayload()
+                    if payload then
+                        table.insert(rows, self:MakeRow(tag, payload))
+                    end
                 end
+            elseif self.available[account] then
+                table.insert(rows, self:MakeRow(tag, self.builds[account]))
             end
         end
     end
@@ -243,6 +352,7 @@ function GroupBuilds:RenderRows(rows)
     local contentWidth = 0
     local showClass = self.sv.groupWindow.showClassIcon
     local nameLeft = showClass and NAME_LEFT_CLASS or NAME_LEFT_ROLE
+    local loadingRow
 
     for i, row in ipairs(rows) do
         local rowControl = self.rowControls[i]
@@ -254,6 +364,7 @@ function GroupBuilds:RenderRows(rows)
         end
 
         rowControl.payload = row.payload
+        rowControl.account = row.account
         rowControl.ownerName = row.name
         rowControl.saveClass = row.class
         rowControl.saveRole = row.role
@@ -273,8 +384,13 @@ function GroupBuilds:RenderRows(rows)
         else
             nameControl:SetAnchor(LEFT, rowControl:GetNamedChild('_Role'), RIGHT, 6, 0)
         end
-        nameControl:SetAnchor(RIGHT, rowControl, RIGHT, -4, 0)
+        local loading = self.loadingAccount == row.account
+        nameControl:SetAnchor(RIGHT, rowControl, RIGHT, loading and -26 or -4, 0)
         nameControl:SetText(row.name)
+
+        if loading then
+            loadingRow = rowControl
+        end
 
         rowControl:SetHidden(false)
 
@@ -287,6 +403,18 @@ function GroupBuilds:RenderRows(rows)
 
     for i = #rows + 1, #self.rowControls do
         self.rowControls[i]:SetHidden(true)
+    end
+
+    if loadingRow then
+        local spinner = GroupBuildsWindowLoading
+        spinner:ClearAnchors()
+        spinner:SetAnchor(RIGHT, loadingRow, RIGHT, -4, 0)
+        spinner:SetHidden(false)
+        if not self.loadingAnim:IsPlaying() then
+            self.loadingAnim:PlayForward()
+        end
+    else
+        self:HideLoading()
     end
 
     GroupBuildsWindowTitle:SetText(string.format('Group Builds (%d)', #rows))
@@ -322,17 +450,11 @@ function GroupBuilds:OnRowClicked(rowControl, button, upInside)
     end
 
     if button == MOUSE_BUTTON_INDEX_LEFT then
-        self.displayed = {
-            payload = rowControl.payload,
-            class = rowControl.saveClass,
-            role = rowControl.saveRole,
-            name = rowControl.ownerName,
-        }
-        self:OpenBuild(rowControl.payload)
+        self:RequestAndAct(rowControl, 'open')
     elseif button == MOUSE_BUTTON_INDEX_RIGHT then
         ClearMenu()
         AddMenuItem('Save build', function()
-            self:SaveBuild(rowControl)
+            self:RequestAndAct(rowControl, 'save')
         end)
         ShowMenu(rowControl)
     end
@@ -389,10 +511,6 @@ function GroupBuilds:InsertSuggestedName()
     if self.pendingSave and self.pendingSave.suggestedName then
         GroupBuildsRolePickerNameBox:SetText(self.pendingSave.suggestedName)
     end
-end
-
-function GroupBuilds:SaveBuild(rowControl)
-    self:OpenSaveDialog(rowControl.payload, rowControl.saveRole, rowControl.saveClass, rowControl.ownerName)
 end
 
 function GroupBuilds:SaveDisplayedPrompt()
@@ -604,14 +722,14 @@ function GroupBuilds:OnShareToggled()
     self.sharing = not self.sharing
     self:RefreshList()
     if self.sharing then
-        self:QueueSendMyBuild(true)
+        self:SyncGroup()
     else
         self:ClearMyBuild()
     end
 end
 
 function GroupBuilds:OpenSettings()
-    LibAddonMenu2:OpenToPanel(GroupBuildsSettings.panel)
+    LibAddonMenu2:OpenToPanel(GroupBuilds.Settings.panel)
 end
 
 function GroupBuilds:UpdateGroupState()
@@ -619,11 +737,10 @@ function GroupBuilds:UpdateGroupState()
     if grouped and not self.wasGrouped then
         self.sharing = false
         self:RefreshToggle()
-        if self:IsSharing() then
-            self:QueueSendMyBuild(true)
-        end
+        self:SyncGroup()
     elseif not grouped and self.wasGrouped then
         self.builds = {}
+        self.available = {}
         self.sharing = false
         self:RefreshToggle()
     end
@@ -674,27 +791,24 @@ function GroupBuilds:RegisterProtocol()
     handler:SetDescription('Shares SuperStar builds between group members')
 
     protocol = handler:DeclareProtocol(PROTOCOL_ID, PROTOCOL_NAME)
+    protocol:AddField(LGB.CreateNumericField('kind', { minValue = 1, maxValue = 6 }))
+    protocol:AddField(LGB.CreateStringField('target', { maxLength = 40 }))
     protocol:AddField(LGB.CreateStringField('build', { maxLength = 400 }))
     protocol:OnData(function(unitTag, data)
-        self:OnBuildReceived(unitTag, data)
+        self:OnData(unitTag, data)
     end)
-    protocol:Finalize({ isRelevantInCombat = false })
-
-    fireResync = handler:DeclareCustomEvent(RESYNC_EVENT_ID, RESYNC_EVENT_NAME, { isRelevantInCombat = false })
-    LGB:RegisterForCustomEvent(RESYNC_EVENT_NAME, function()
-        self:QueueResyncResponse()
-    end)
+    protocol:Finalize({ isRelevantInCombat = false, replaceQueuedMessages = false })
 end
 
 function GroupBuilds:RegisterEvents()
     EM:RegisterForEvent(self.name, EVENT_PLAYER_ACTIVATED, function()
         self:UpdateGroupState()
         self:RefreshList()
-        self:RequestResync()
+        self:SyncGroup()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_GROUP_MEMBER_JOINED, function()
-        self:QueueSendMyBuild(true)
+        self:QueueAnnounce()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_GROUP_UPDATE, function()
@@ -703,6 +817,7 @@ function GroupBuilds:RegisterEvents()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_GROUP_MEMBER_LEFT, function()
+        self:PruneDeparted()
         self:RefreshList()
     end)
 
@@ -711,20 +826,20 @@ function GroupBuilds:RegisterEvents()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_INVENTORY_SINGLE_SLOT_UPDATE, function()
-        self:QueueSendMyBuild(false)
+        self:QueueInvalidate()
     end)
     EM:AddFilterForEvent(self.name, EVENT_INVENTORY_SINGLE_SLOT_UPDATE, REGISTER_FILTER_BAG_ID, BAG_WORN)
 
     EM:RegisterForEvent(self.name, EVENT_ACTION_SLOTS_FULL_UPDATE, function()
-        self:QueueSendMyBuild(false)
+        self:QueueInvalidate()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_ACTION_SLOT_UPDATED, function()
-        self:QueueSendMyBuild(false)
+        self:QueueInvalidate()
     end)
 
     EM:RegisterForEvent(self.name, EVENT_CHAMPION_PURCHASE_RESULT, function()
-        self:QueueSendMyBuild(false)
+        self:QueueInvalidate()
     end)
 
     HUD_SCENE:RegisterCallback('StateChange', function()
@@ -812,7 +927,6 @@ function GroupBuilds:Initialize()
     self.sv = ZO_SavedVars:NewAccountWide('GroupBuildsSavedVariables', 1, nil, {
         sharing = {
             alwaysShare = false,
-            refreshInterval = 10,
         },
         groupWindow = {
             shown = true,
@@ -832,7 +946,7 @@ function GroupBuilds:Initialize()
     self.browserOpen = false
     self.savedCounter = 0
 
-    GroupBuildsSettings:Setup()
+    GroupBuilds.Settings:Setup()
 
     ESO_Dialogs['GROUP_BUILDS_RENAME'] = {
         canQueue = true,
@@ -888,7 +1002,9 @@ function GroupBuilds:Initialize()
 
     self:BuildSaveDialog()
 
-    self.browser = ZO_SortFilterList.New(GroupBuildsBrowserClass, GroupBuildsBrowser)
+    self.loadingAnim = ANIMATION_MANAGER:CreateTimelineFromVirtual('LoadIconAnimation', GroupBuildsWindowLoading)
+
+    self.browser = ZO_SortFilterList.New(GroupBuilds.BrowserClass, GroupBuildsBrowser)
     self.browser:InitializeInterface()
 
     self:RestorePosition()
@@ -899,7 +1015,6 @@ function GroupBuilds:Initialize()
     self:RegisterEvents()
     self:TrackDisplayedBuild()
     self:RefreshList()
-    self:StartRefreshTimer()
 end
 
 function GroupBuilds.OnAddOnLoaded(_, addOnName)
